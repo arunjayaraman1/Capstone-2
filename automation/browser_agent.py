@@ -245,232 +245,308 @@
 
 #     return await agent.run()
 
-
+# ==================================================================================================================================
 
 from browser_use import Agent, Browser, ChatOpenAI
 from automation.models import CartResult, ProductIntent
 from dotenv import load_dotenv
+from typing import Optional
 
 load_dotenv()
 
-# ---------------------------------------------------------
-# CONSTANTS
-# ---------------------------------------------------------
+# =========================================================
+# CONFIGURATION
+# =========================================================
 
-SPONSORED_URL_PATTERNS = [
+AMAZON_URL = "https://www.amazon.in"
+
+SPONSORED_URL_PATTERNS = (
     "/sspa/",
     "sp_atk",
     "sp_csd",
     "sp_btf",
-    "sp_"
-]
+    "sp_",
+)
 
 MAX_FILTER_ATTEMPTS = 2
 MAX_SCROLL_ATTEMPTS = 2
-MAX_PRODUCT_PAGE_REJECTIONS = 3
+MAX_AGENT_STEPS = 40
 
-# ---------------------------------------------------------
-# INTENT CLASSIFICATION
-# ---------------------------------------------------------
+MODEL_NAME = "gpt-4o-mini"
+
+
+# =========================================================
+# VALIDATION
+# =========================================================
+
+def validate_intent(intent: ProductIntent) -> None:
+    """Fail fast on invalid intent"""
+    if not intent.product or not intent.product.strip():
+        raise ValueError("Product name is required")
+
+    if intent.min_price and intent.max_price:
+        if intent.min_price > intent.max_price:
+            raise ValueError("min_price cannot exceed max_price")
+
+    if intent.min_rating:
+        if not (0 < intent.min_rating <= 5):
+            raise ValueError("min_rating must be between 0 and 5")
+
+
+# =========================================================
+# INTENT MODE
+# =========================================================
 
 def is_generic_intent(intent: ProductIntent) -> bool:
+    """
+    Generic intent:
+    - No brand
+    - No color
+    - Very short product name
+    """
     return (
         not intent.brand
         and not intent.color
         and len(intent.product.split()) <= 2
     )
 
-# ---------------------------------------------------------
+
+# =========================================================
 # TASK BUILDER
-# ---------------------------------------------------------
+# =========================================================
 
 def build_task(intent: ProductIntent) -> str:
+    validate_intent(intent)
+
     generic_mode = is_generic_intent(intent)
 
-    search_query = intent.product
-    if intent.brand:
-        search_query = f"{intent.brand} {intent.product}"
+    search_query = (
+        f"{intent.brand} {intent.product}"
+        if intent.brand
+        else intent.product
+    )
+
+    price_text = ""
+    if intent.min_price and intent.max_price:
+        price_text = f"₹{intent.min_price} – ₹{intent.max_price}"
+    elif intent.max_price:
+        price_text = f"Under ₹{intent.max_price}"
+    elif intent.min_price:
+        price_text = f"Over ₹{intent.min_price}"
+
+    rating_text = (
+        f"{intent.min_rating} Stars & Up"
+        if intent.min_rating else ""
+    )
 
     return f"""
-You are a HUMAN shopping on Amazon India.
+You are a REAL HUMAN shopping on Amazon India.
 
 ==================================================
 ABSOLUTE RULES (NEVER BREAK)
 ==================================================
 
-1. ❌ SPONSORED PRODUCTS ARE FORBIDDEN
-   - If label shows "Sponsored", "Ad", "Promoted" → DISCARD
-   - If URL contains:
+1. ❌ NO SPONSORED PRODUCTS
+   - If label shows: Sponsored / Ad / Promoted → DISCARD
+   - If URL contains any of:
      {", ".join(SPONSORED_URL_PATTERNS)}
      → DISCARD IMMEDIATELY
 
-2. 🛑 ADD TO CART ONLY ONCE
-   - Click Add to Cart exactly ONE TIME
-   - Never retry
-   - Never add alternatives
+2. 🛑 ADD TO CART EXACTLY ONCE
+   - One click only
+   - No retries
+   - No alternatives
 
-3. 🎯 INTENT MODE
+3. 🎯 MODE
    - {"GENERIC MODE" if generic_mode else "EXACT MATCH MODE"}
 
 ==================================================
 STEP 1 — SEARCH
 ==================================================
 
-- Go to https://www.amazon.in
+- Go to {AMAZON_URL}
 - Wait 4–5 seconds
-- Type "{search_query}" in the search box
+- Search for: "{search_query}"
 - Press Enter
-- Wait for results page to fully load
+- Wait for results to load
 
 ==================================================
-STEP 2 — TRY FILTERS FIRST (OPTIONAL, HUMAN-GUARDED)
+STEP 2 — OPTIONAL FILTERS (DO NOT GET STUCK)
 ==================================================
 
-Filters are OPTIONAL. Humans use them only if they HELP.
+ATTEMPTS: max {MAX_FILTER_ATTEMPTS}
 
--------------------------
-RATING FILTER (SAFE)
--------------------------
-{"- Look for 'Avg. Customer Review'" if intent.min_rating else ""}
-{"- Click '" + str(intent.min_rating) + " Stars & Up' if available" if intent.min_rating else ""}
-{"- If clickable → apply and wait 3–4 seconds" if intent.min_rating else ""}
-{"- If missing → SKIP rating filter" if intent.min_rating else ""}
+PRICE FILTER:
+{f"- Try '{price_text}' if available" if price_text else "- Skip (no price constraint)"}
 
--------------------------
-PRICE FILTER (STRICT HUMAN RULES)
--------------------------
+RATING FILTER:
+{f"- Try '{rating_text}' if available" if rating_text else "- Skip (no rating constraint)"}
 
-Intent:
-{"- Minimum price: ₹" + str(intent.min_price) if intent.min_price else ""}
-{"- Maximum price: ₹" + str(intent.max_price) if intent.max_price else ""}
-
-PRICE FILTER SAFETY RULES (CRITICAL):
-
-1. If BOTH min and max are given:
-   - Click ONLY ranges that OVERLAP the intent range
-   - Example: ₹300–₹500 overlaps ₹300–₹400 → OK
-
-2. If ONLY min_price is given (no max):
-   - Prefer the CLOSEST lower-bound range
-   - Example: min ₹200 → prefer ₹200–₹300 or ₹200–₹400
-   - NEVER jump to "Over ₹700" or very high ranges
-
-3. If ONLY max_price is given:
-   - Prefer the CLOSEST upper-bound range
-
-4. If no reasonable filter exists:
-   - SKIP price filter entirely
-
-IMPORTANT:
-- NEVER click a price filter that unnecessarily narrows results
-- If unsure → SKIP price filter
-- Rating + manual check is safer than wrong price filters
+RULE:
+- If ANY filter fails → stop filtering and continue
 
 ==================================================
-STEP 3 — SCROLL (ALWAYS)
+STEP 3 — SCROLL
 ==================================================
 
-- Scroll down at least 2 full screen heights
-- Sponsored products usually appear first
-- Humans scroll past ads
+- Scroll down 1 full screen heights
+- Sponsored items usually appear first
 
 ==================================================
-STEP 4 — EXTRACT PRODUCTS (NON-SPONSORED ONLY)
+STEP 4 — EXTRACT PRODUCTS
 ==================================================
 
 - Extract 30–40 products
-- Extract:
+- For EACH product collect:
   - name
   - price (number)
   - rating (number)
-  - COMPLETE URL
+  - FULL URL
 
-- DISCARD immediately if:
-  - Sponsored label exists
-  - URL contains sponsored patterns
+IMMEDIATE DISCARD IF:
+- Sponsored label exists
+- URL matches sponsored patterns
 
 ==================================================
-STEP 5 — SELECT PRODUCT
+STEP 5 — SELECT FIRST VALID PRODUCT
 ==================================================
 
-GENERIC MODE RULES:
-- Select the FIRST product that satisfies numeric rules
-- Do NOT search for best or cheapest
-- Humans pick the first acceptable option
+{"GENERIC MODE:" if generic_mode else "EXACT MODE:"}
 
-Numeric rules:
-{"- Price ≥ ₹" + str(intent.min_price) if intent.min_price else ""}
-{"- Price ≤ ₹" + str(intent.max_price) if intent.max_price else ""}
-{"- Rating ≥ " + str(intent.min_rating) + " stars" if intent.min_rating else ""}
+{"- Select FIRST product meeting numeric rules" if generic_mode else ""}
+{"- Do NOT optimize or compare" if generic_mode else ""}
 
-- Pick FIRST valid product
+{"- Name must match: " + intent.product if not generic_mode else ""}
+{"- Brand must match: " + intent.brand if intent.brand and not generic_mode else ""}
+{"- Color must match: " + intent.color if intent.color and not generic_mode else ""}
+
+NUMERIC RULES:
+{f"- Price ≥ ₹{intent.min_price}" if intent.min_price else ""}
+{f"- Price ≤ ₹{intent.max_price}" if intent.max_price else ""}
+{f"- Rating ≥ {intent.min_rating}" if intent.min_rating else ""}
+
+- Pick FIRST valid product only
 - If none found:
   - Scroll once more (max {MAX_SCROLL_ATTEMPTS})
   - Extract again
-- If still none → RETURN ERROR
+- If still none → FAIL
 
 ==================================================
-STEP 6 — VERIFY ON PRODUCT PAGE
+STEP 6 — VERIFY PRODUCT PAGE (SAME TAB ONLY)
 ==================================================
 
-- Navigate using COMPLETE product URL
+- DO NOT click product title links
+- DO NOT open new tabs
+- Use the FULL product URL
+- Navigate in the SAME tab by:
+  - Typing URL in address bar OR
+  - Direct navigation (window.location.href)
+
 - Wait 4–5 seconds
 
-VERIFY:
-- Product is NOT sponsored
-{"- Name match NOT required (generic)" if generic_mode else "- Name must match intent"}
-{"- Price rule satisfied" if intent.min_price or intent.max_price else ""}
-{"- Rating rule satisfied" if intent.min_rating else ""}
-
-GENERIC MODE SPECIAL RULE:
-- If price/rating mismatch:
-  - Go BACK
-  - Try NEXT extracted product
-  - DO NOT scroll again
-  - Max {MAX_PRODUCT_PAGE_REJECTIONS} rejections
-
 ==================================================
-STEP 7 — ADD TO CART (ONE TIME ONLY)
+STEP 7 — ADD TO CART (ONCE)
 ==================================================
 
-- Click main "Add to Cart" button ONCE
+- Click "Add to Cart" ONCE
 - Wait 4–5 seconds
-- Dismiss warranty popups if needed
-- DO NOT click again
+- Close warranty popups if shown
+
+🚫 ADD TO CART FIREWALL
+- NEVER click "Add to Cart" on search/results pages
+- ONLY add to cart on product detail page (/dp/ or /gp/aw/d/)
+- If cart count increases before product page → FAIL
+
 
 ==================================================
-STEP 8 — CONFIRM SUCCESS
+STEP 8 — CONFIRM
 ==================================================
 
-Confirm success via ANY:
+SUCCESS IF ANY:
 - "Added to Cart" message
-- Cart icon count increased
+- Cart count increased
 - "Proceed to Buy" visible
 
-If confirmed:
-- Use DONE action
+If success:
+- DONE
 - Return CartResult JSON
 
-==================================================
-FINAL RULE
-==================================================
+If failure:
+- RETURN ERROR
 
+FINAL RULE:
 - After DONE → STOP
 - No retries
-- No file writes
 """
 
-# ---------------------------------------------------------
+# =========================================================
 # RUNNER
-# ---------------------------------------------------------
+# =========================================================
+
+# async def run_browser_agent(intent: ProductIntent) -> CartResult:
+#     """
+#     Industry-grade runner:
+#     - Deterministic
+#     - No infinite loops
+#     - Strict non-sponsored selection
+#     - Guaranteed first valid product
+#     """
+
+#     validate_intent(intent)
+
+#     agent = Agent(
+#         browser=Browser(headless=False),
+#         llm=ChatOpenAI(model=MODEL_NAME),
+#         task=build_task(intent),
+#         output_model_schema=CartResult,
+#         max_steps=MAX_AGENT_STEPS,
+#     )
+
+#     result: CartResult = await agent.run()
+
+#     if not result or not result.success:
+#         return CartResult(
+#             success=False,
+#             message="No non-sponsored product matched the criteria",
+#             product=None,
+#         )
+
+#     return result
+
+
 
 async def run_browser_agent(intent: ProductIntent) -> CartResult:
+    validate_intent(intent)
+
     agent = Agent(
         browser=Browser(headless=False),
-        llm=ChatOpenAI(model="gpt-4o-mini"),
+        llm=ChatOpenAI(model=MODEL_NAME),
         task=build_task(intent),
         output_model_schema=CartResult,
-        max_steps=45
+        max_steps=MAX_AGENT_STEPS,
     )
 
-    return await agent.run()
+    result = await agent.run()
+
+    # -----------------------------------------
+    # Try structured_output first (browser-use convention)
+    # -----------------------------------------
+    if hasattr(result, 'structured_output') and result.structured_output:
+        return result.structured_output
+
+    # -----------------------------------------
+    # Fallback: Extract DONE payload from history
+    # -----------------------------------------
+    if hasattr(result, 'steps'):
+        done_events = [
+            step for step in result.steps
+            if hasattr(step, 'action_name') and step.action_name == "done"
+        ]
+
+        if done_events:
+            final_data = done_events[-1].action_input
+            if final_data and final_data.get("items"):
+                return CartResult(items=final_data["items"])
+
+    return CartResult(items=[])
+

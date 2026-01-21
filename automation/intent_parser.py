@@ -159,4 +159,3 @@ def parse_intent(query:str)-> ProductIntent:
         return ProductIntent(**data)
     except Exception as e:
         raise ValueError(f"Failed to create ProductIntent from parsed data: {data}. Error: {str(e)}")
-
