@@ -559,10 +559,12 @@ STEP 1 — SEARCH
 - Wait for results to load
 
 ==================================================
-STEP 2 — APPLY FILTERS (USE WHEN AVAILABLE)
+STEP 2 — APPLY FILTERS FIRST (CRITICAL - DO THIS IMMEDIATELY AFTER SEARCH)
 ==================================================
 
-Amazon has filters in the LEFT SIDEBAR. USE THEM - they improve results quality!
+⚠️ IMPORTANT: Apply filters BEFORE extracting products. This reduces irrelevant results!
+
+Amazon has filters in the LEFT SIDEBAR. USE THEM FIRST - they improve results quality!
 
 FILTER DISCOVERY:
 - Scroll down LEFT sidebar to see all available filters
@@ -600,126 +602,177 @@ FILTERING STRATEGY:
 - Filters significantly reduce irrelevant results - use them when possible!
 
 ==================================================
-STEP 3 — SCROLL
+STEP 3 — EXTRACT PRODUCTS (AFTER FILTERS APPLIED)
 ==================================================
 
-- Scroll down 1–2 full screen heights
-- Sponsored items usually appear first
-
-==================================================
-STEP 4 — EXTRACT PRODUCTS (ONE TIME)
-==================================================
-
-Extract visible products using extract() action:
-- Extract ALL visible products on screen
+After filters are applied, extract ALL visible products on screen using extract() action:
+- Get products in DISPLAY ORDER (top to bottom)
 - For EACH product collect:
   - name (full product name)
   - price (numeric value only, e.g. 78, 149)
   - rating (numeric value, e.g. 4.0, 4.3)
+  - sponsored status (check for "Sponsored" label)
   - FULL URL (must include /dp/ or product identifier)
 
-IMMEDIATE DISCARD IF:
-- Product has "Sponsored" label
-- URL contains: {", ".join(SPONSORED_URL_PATTERNS)}
-
-AFTER EXTRACTION:
-- Create a filtered list of NON-SPONSORED products only
-- Sort by soft preferences if any (e.g. preferred brand first)
-- Proceed immediately to STEP 5
-- DO NOT extract again unless no valid products found
+EXTRACTION NOTES:
+- Extract products AFTER filters are applied
+- Get products in DISPLAY ORDER (top to bottom)
+- Valid non-sponsored products may be visible already
 
 ==================================================
-STEP 5 — SELECT & NAVIGATE TO PRODUCT
+STEP 4 — CHECK PRODUCTS (AVOID SPONSORED, VERIFY ALL CONDITIONS)
 ==================================================
 
-{selection_rules}
+Process extracted products IN ORDER (top to bottom):
 
-SELECTION STRATEGY:
-{"- Select FIRST product meeting hard constraints" if generic_mode else "- Select FIRST product meeting all hard constraints + attributes"}
-- If soft preferences exist: PREFER matching products but DON'T reject if they don't match
-- Example: If prefer Logitech, sort Logitech first, but accept other brands if they match hard constraints
+FOR EACH PRODUCT (check systematically, one at a time):
 
-CRITICAL: After identifying the FIRST valid product:
-
-1. GET THE PRODUCT URL from extracted data
-   - Example: https://www.amazon.in/dp/B074N7X12P
+1. ❌ AVOID SPONSORED PRODUCTS (skip immediately):
+   - Has "Sponsored" label? → SKIP to next product
+   - URL contains /sspa/ or sp_atk or sp_csd or sp_btf or sp_? → SKIP to next product
+   - DO NOT check price/rating for sponsored products
    
-2. NAVIGATE to that URL immediately:
+2. ✅ IF NON-SPONSORED, VERIFY ALL QUERY CONDITIONS:
+   
+   {selection_rules}
+   
+   CHECK ALL CONDITIONS FROM QUERY:
+   - ✓ Price within range? (if price constraint exists)
+   - ✓ Rating meets minimum? (if rating constraint exists)
+   - ✓ Discount meets minimum? (if discount constraint exists)
+   - ✓ Attributes match? (if attributes specified)
+   - ✓ Brand matches? (if hard brand constraint exists)
+   
+   ALL CONDITIONS MUST BE MET to select this product.
+   
+3. IF NON-SPONSORED + ALL CONDITIONS MET:
+   - ✅ This is your product! 
+   - STOP checking other products
+   - Proceed to STEP 5 (Open product page)
+   
+4. IF SPONSORED OR ANY CONDITION NOT MET:
+   - ❌ Skip this product
+   - Continue to next product in list
+
+EXAMPLE FLOW (Query: "mouse under ₹100, rating 4+"):
+Product 1: "Dell Mouse" - Sponsored ❌ → Skip (don't check price/rating)
+Product 2: "HP Mouse ₹299, 4.5★" - Non-sponsored ✓, but price ₹299 > ₹100 ❌ → Skip
+Product 3: "Logitech Mouse ₹89, 3.8★" - Non-sponsored ✓, price ₹89 < ₹100 ✓, but rating 3.8 < 4.0 ❌ → Skip
+Product 4: "Generic Mouse ₹78, 4.2★" - Non-sponsored ✓, price ₹78 < ₹100 ✓, rating 4.2 ≥ 4.0 ✓ → SELECT THIS!
+Stop checking, navigate to Product 4
+
+AFTER CHECKING ALL VISIBLE PRODUCTS:
+- If valid non-sponsored product found → Go to STEP 5 (Open product page)
+- If NO valid product found → Go to STEP 4.1 (Scroll)
+
+==================================================
+STEP 4.1 — SCROLL (ONLY IF NO VALID PRODUCT FOUND)
+==================================================
+
+ONLY execute this if NO valid products found in visible area.
+
+- Scroll down 1 full screen height
+- Wait 2 seconds for new products to load
+- Extract newly visible products
+- Repeat STEP 4 (check each product sequentially for sponsored + conditions)
+
+SCROLL LIMITS:
+- Maximum {MAX_SCROLL_ATTEMPTS} scroll attempts
+- If still no valid products after {MAX_SCROLL_ATTEMPTS} scrolls → FAIL with error
+
+==================================================
+STEP 5 — OPEN PRODUCT PAGE
+==================================================
+
+You have identified a valid non-sponsored product that meets ALL query conditions.
+
+OPEN THE PRODUCT PAGE:
+
+1. GET THE PRODUCT URL from Step 4
+   - Example: https://www.amazon.in/dp/B074N7X12P
+   - URL must be complete and valid
+   
+2. NAVIGATE to that URL:
    - Use navigate(url=PRODUCT_URL) action
    - OR use evaluate: window.location.href = "PRODUCT_URL"
    - DO NOT try to click elements by index
    - DO NOT open new tabs
    
-3. Wait 4-5 seconds for page load
+3. Wait 4-5 seconds for product page to load
 
-4. STOP scrolling - you found a valid product!
+4. You should now be on the product detail page (/dp/ URL)
 
-If NO valid product found after {MAX_SCROLL_ATTEMPTS} scrolls:
-  - FAIL with error message
-  - DO NOT keep scrolling indefinitely
+IMPORTANT:
+- Product is already verified (non-sponsored + meets all conditions)
+- Just open the page - no additional checking needed
 
 ==================================================
-STEP 6 — VERIFY PRODUCT PAGE
+STEP 6 — VERIFY PRODUCT PAGE (OPTIONAL CHECK)
 ==================================================
 
 You should now be on the product detail page (/dp/ URL).
 
-VERIFY:
+QUICK VERIFY (optional, product already checked in Step 4):
 - URL contains /dp/ or /gp/aw/d/
-- NOT sponsored (no sponsored labels)
-- Meets hard constraints (price, rating match extracted data)
-{"- Matches product attributes" if not generic_mode else ""}
+- Product page loaded correctly
 
-If verification fails:
+If page didn't load or wrong product:
   - Go BACK to search results
-  - Try NEXT extracted product (don't scroll yet)
+  - Try NEXT extracted product from Step 4
   
-If verification passes:
-  - Proceed to STEP 7
+If page loaded correctly:
+  - Proceed to STEP 7 (Add to cart)
 
 ==================================================
-STEP 7 — ADD TO CART (ONCE)
+STEP 7 — ADD TO CART
 ==================================================
 
-- Click "Add to Cart" ONCE
-- Wait 4–5 seconds
-- Close warranty/protection plan popups if shown (click "No thanks" or close)
-- DO NOT click "Proceed to Buy" or "Go to Cart"
+ADD THE PRODUCT TO CART:
 
-🚫 ADD TO CART FIREWALL
+1. Click "Add to Cart" button ONCE
+   - Look for button with text "Add to Cart" or id="add-to-cart-button"
+   - Click it exactly ONCE
+   
+2. Wait 4–5 seconds for confirmation
+
+3. Close any popups if shown:
+   - Warranty/protection plan popups → Click "No thanks" or close
+   - DO NOT click "Proceed to Buy" or "Go to Cart"
+
+🚫 ADD TO CART RULES:
 - NEVER click "Add to Cart" on search/results pages
 - ONLY add to cart on product detail page (/dp/ or /gp/aw/d/)
-- If cart count increases before product page → FAIL
+- Click exactly ONCE - no retries
 
 ==================================================
-STEP 8 — VERIFY & FINISH
+STEP 8 — VERIFY ADDED & END TASK
 ==================================================
 
-VERIFY SUCCESS by checking ANY of:
+VERIFY ITEM WAS ADDED by checking ANY of:
 1. "Added to Cart" confirmation message appears
 2. Cart icon shows count increased (e.g., "1" badge on cart)
 3. "Go to Cart" button visible
 4. Can see "Subtotal" or cart summary
 
-If ANY verification succeeds:
+IF VERIFICATION SUCCEEDS:
 - Extract final product details (name, price, rating, URL)
 - Use DONE action
 - Return CartResult JSON with the product
+- TASK COMPLETE - STOP HERE
 
-IMPORTANT - DO NOT:
-❌ Click "Proceed to Buy" or "Proceed to Checkout"
-❌ Try to complete purchase
-❌ Fill in any forms or sign-in pages
-❌ Navigate to checkout/payment pages
-
-If sign-in page appears:
+IF SIGN-IN PAGE APPEARS:
 - Task is ALREADY COMPLETE (item was added to cart)
 - Don't try to sign in
+- Don't fill any forms
 - Just return the CartResult
 
-FINAL RULE:
-- After adding to cart successfully → DONE immediately
-- After DONE → STOP (no retries, no additional actions)
+FINAL RULES:
+❌ DO NOT click "Proceed to Buy" or "Proceed to Checkout"
+❌ DO NOT try to complete purchase
+❌ DO NOT fill in any forms or sign-in pages
+❌ DO NOT navigate to checkout/payment pages
+✅ After adding to cart → DONE immediately
+✅ After DONE → STOP (no retries, no additional actions)
 """
 
 # =========================================================

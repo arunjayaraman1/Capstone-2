@@ -12,7 +12,7 @@ A comprehensive natural language shopping automation system that uses LangChain 
    - [automation/intent_parser.py](#automationintent_parserpy)
    - [automation/browser_agent.py](#automationbrowser_agentpy)
    - [api.py](#apipy)
-   - [ui.py](#uipy) 
+   - [ui.py](#uipy) 5 links
    - [test.py](#testpy)
 5. [Setup and Installation](#setup-and-installation)
 6. [Usage](#usage)
