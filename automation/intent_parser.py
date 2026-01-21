@@ -10,84 +10,226 @@ llm = ChatOpenAI(model="gpt-4o-mini")
 
 prompt = ChatPromptTemplate.from_template(
     """
-You are an expert at extracting shopping intent from natural language queries.
+You are an expert at extracting shopping intent from natural language queries for Amazon India.
 
-Extract the shopping intent from the user query and return ONLY valid JSON.
+Extract shopping intent and return ONLY valid JSON with dynamic attributes.
 
-QUERY ANALYSIS RULES:
-1. PRODUCT NAME: Extract the main product/item the user wants to buy (e.g., "pen", "laptop", "phone")
-   - Remove color/size/other attributes from product name - extract only the base product
-   - Example: "Oneplus 15r in black" → product: "Oneplus 15r"
+=============================================================
+CORE EXTRACTION RULES
+=============================================================
 
-2. COLOR CONSTRAINTS:
-   - If user mentions a color (e.g., "black", "white", "red", "blue", "mint", "silver", "gold", etc.), extract it
-   - Common patterns: "X in color", "X color", "color X", "black X", "white X", etc.
-   - Examples: 
-     * "Oneplus 15r in black" → product: "Oneplus 15r", color: "black"
-     * "black pen" → product: "pen", color: "black"
-     * "laptop white" → product: "laptop", color: "white"
-   - Extract color as lowercase string (e.g., "black", "white", "mint breeze", "silver")
-   - If no color mentioned, color = null
+1. PRODUCT NAME (required)
+   - Extract the BASE product type (e.g., "mouse", "laptop", "phone", "t-shirt")
+   - Remove adjectives/attributes from product name
+   - Examples:
+     * "wired mouse" → product: "mouse"
+     * "blue cotton t-shirt" → product: "t-shirt"
+     * "Logitech wireless mouse" → product: "mouse"
+     * "Oneplus 15r" → product: "Oneplus 15r" (brand model is the product)
 
-3. PRICE CONSTRAINTS:
-   - If user says "less than X", "below X", "under X", "maximum X", "up to X", "not more than X" → max_price = X
-   - If user says "more than X", "above X", "at least X", "minimum X", "starting from X" → min_price = X
-   - If user says "between X and Y" → min_price = X, max_price = Y
-   - Currency indicators (rs, rupees, ₹, $, etc.) should be ignored, extract just the number
-   - Examples: "less than 20 rs" → max_price: 20, "above 500 rupees" → min_price: 500
+2. ATTRIBUTES (product characteristics)
+   - Extract ANY product characteristic mentioned:
+     * Connectivity: "wired", "wireless", "bluetooth", "USB"
+     * Color: "black", "white", "blue", "red", etc.
+     * Size: "XL", "large", "small", "10 inch", etc.
+     * Material: "cotton", "leather", "plastic", "metal"
+     * Type: "gaming", "office", "sports", "casual"
+     * Any other descriptive attribute
+   
+   - Store in attributes object:
+     {{"connectivity": "wired", "color": "black", "size": "L"}}
 
-3. RATING CONSTRAINTS:
-   - If user says "high rating", "good rating", "more rating", "better rating", "well rated", "highly rated" → min_rating = 4.0 (assume they want good products)
-   - If user says "rating above X", "rating more than X", "minimum X stars", "at least X stars" → min_rating = X
-   - If user says "rating below X", "rating less than X", "maximum X stars" → max_rating = X
-   - If user says "best rated", "top rated", "highest rating" → sort_by = "rating_desc"
-   - Star ratings: Extract numeric value (e.g., "4 stars" → 4.0, "4.5 stars" → 4.5)
+3. HARD CONSTRAINTS (must satisfy)
+   - Price constraints:
+     * "under X", "below X", "less than X", "maximum X" → {{"price": {{"max": X}}}}
+     * "above X", "over X", "more than X", "minimum X" → {{"price": {{"min": X}}}}
+     * "between X and Y" → {{"price": {{"min": X, "max": Y}}}}
+   
+   - Rating constraints:
+     * "rating above X", "minimum X stars", "at least X stars" → {{"rating": {{"min": X}}}}
+     * "rating below X", "maximum X stars" → {{"rating": {{"max": X}}}}
+     * "good rating", "high rating", "well rated" → {{"rating": {{"min": 4.0}}}}
+   
+   - Discount constraints:
+     * "at least X% discount", "minimum X% off", "X% off or more" → {{"discount": {{"min": X}}}}
+     * "with discount", "on sale", "discounted" → {{"discount": {{"min": 10}}}}
+     * Extract numeric discount percentage (e.g., "30% discount" → 30)
+   
+   - Required features:
+     * "must have X", "needs X", "requires X", "with X" → add to hard_constraints
+     * "from BRAND" (without softeners) → {{"brand": "BRAND"}}
 
-4. SORT PREFERENCES:
-   - "cheapest", "lowest price", "low price", "affordable", "budget" → sort_by: "price_asc"
-   - "expensive", "highest price", "premium" → sort_by: "price_desc"
-   - "best rated", "highest rating", "top rated", "well rated" → sort_by: "rating_desc"
-   - "worst rated", "lowest rating" → sort_by: "rating_asc"
-   - "most popular", "best selling" → sort_by: null (use default/best match)
+4. SOFT PREFERENCES (nice to have, not required)
+   - Detect softening keywords:
+     * "preferably", "preferred", "ideally", "if possible"
+     * "better if", "nice to have", "would like"
+   
+   - When detected, place in soft_preferences instead of hard_constraints:
+     * "preferably from Logitech" → {{"brand": "Logitech"}}
+     * "preferably from Philips or Prestige" → {{"brands": ["Philips", "Prestige"]}}
+     * "ideally Nike or Adidas" → {{"brands": ["Nike", "Adidas"]}}
+     * "ideally blue" → {{"color": "blue"}}
+     * "better if wireless" → {{"connectivity": "wireless"}}
+   
+   - For multiple brands with "or":
+     * Extract as LIST of brands in "brands" field (not "brand")
+     * Example: "Philips or Prestige" → ["Philips", "Prestige"]
+     * Agent will try each brand one by one
 
-5. COMMON PATTERNS:
-   - "add X with price less than Y" → product: "X", max_price: Y
-   - "add X with more user rating" → product: "X", min_rating: 4.0 or sort_by: "rating_desc"
-   - "add X with good rating" → product: "X", min_rating: 4.0
-   - "cheap X", "affordable X" → product: "X", sort_by: "price_asc"
-   - "best X", "top X" → product: "X", sort_by: "rating_desc"
-   - "X in color", "color X", "black X", "white X" → extract color separately
+5. SORT PREFERENCES
+   - "cheapest", "lowest price", "affordable" → "price_asc"
+   - "expensive", "highest price", "premium" → "price_desc"
+   - "best rated", "top rated", "highest rating" → "rating_desc"
+   - "worst rated", "lowest rating" → "rating_asc"
 
-RETURN FORMAT (ONLY valid JSON, no markdown, no explanation):
+=============================================================
+DECISION TREE: HARD vs SOFT
+=============================================================
+
+IF query contains "preferably", "preferred", "ideally", "if possible", "nice to have":
+   → Place that requirement in soft_preferences
+ELSE IF query says "must", "required", "needs", "only", "from BRAND":
+   → Place in hard_constraints
+ELSE IF it's a price/rating constraint:
+   → Place in hard_constraints
+ELSE IF it's a descriptive attribute (color, size, type):
+   → Place in attributes (search context)
+
+=============================================================
+RETURN FORMAT (ONLY valid JSON)
+=============================================================
+
 {{
-  "product": "extracted product name as string (without color/size attributes)",
-  "max_price": number or null,
-  "min_price": number or null,
-  "min_rating": number or null,
-  "max_rating": number or null,
-  "sort_by": "price_asc" or "price_desc" or "rating_asc" or "rating_desc" or null,
-  "color": "color name as lowercase string or null"
+  "product": "base product name",
+  "attributes": {{
+    // Product characteristics for search
+    // e.g. "color": "black", "connectivity": "wired", "size": "L"
+  }},
+  "hard_constraints": {{
+    // Must satisfy
+    // e.g. "price": {{"min": 300, "max": 600}}, "rating": {{"min": 4.0}}
+  }},
+  "soft_preferences": {{
+    // Nice to have, not required
+    // e.g. "brand": "Logitech"
+  }},
+  "sort_by": "price_asc|price_desc|rating_asc|rating_desc|null"
 }}
 
-EXAMPLES:
-Query: "add pen with price less than 20 rs"
-Response: {{"product": "pen", "max_price": 20, "min_price": null, "min_rating": null, "max_rating": null, "sort_by": null, "color": null}}
+=============================================================
+EXAMPLES
+=============================================================
 
-Query: "add pen with more user rating"
-Response: {{"product": "pen", "max_price": null, "min_price": null, "min_rating": 4.0, "max_rating": null, "sort_by": "rating_desc", "color": null}}
+Query: "Add a wired mouse to the cart priced between ₹300 and ₹600, with user rating above 4 stars, preferably from Logitech"
+Response: {{
+  "product": "mouse",
+  "attributes": {{"connectivity": "wired"}},
+  "hard_constraints": {{
+    "price": {{"min": 300, "max": 600}},
+    "rating": {{"min": 4.0}}
+  }},
+  "soft_preferences": {{"brand": "Logitech"}},
+  "sort_by": null
+}}
 
-Query: "add laptop under 50000 with good rating"
-Response: {{"product": "laptop", "max_price": 50000, "min_price": null, "min_rating": 4.0, "max_rating": null, "sort_by": null, "color": null}}
+Query: "add black Logitech mouse under 500"
+Response: {{
+  "product": "mouse",
+  "attributes": {{"color": "black"}},
+  "hard_constraints": {{
+    "price": {{"max": 500}},
+    "brand": "Logitech"
+  }},
+  "soft_preferences": {{}},
+  "sort_by": null
+}}
 
-Query: "add cheapest phone"
-Response: {{"product": "phone", "max_price": null, "min_price": null, "min_rating": null, "max_rating": null, "sort_by": "price_asc", "color": null}}
+Query: "add cheapest laptop with good rating"
+Response: {{
+  "product": "laptop",
+  "attributes": {{}},
+  "hard_constraints": {{
+    "rating": {{"min": 4.0}}
+  }},
+  "soft_preferences": {{}},
+  "sort_by": "price_asc"
+}}
 
-Query: "add Oneplus 15r in black"
-Response: {{"product": "Oneplus 15r", "max_price": null, "min_price": null, "min_rating": null, "max_rating": null, "sort_by": null, "color": "black"}}
+Query: "blue cotton t-shirt size L under ₹500 ideally from Nike"
+Response: {{
+  "product": "t-shirt",
+  "attributes": {{
+    "color": "blue",
+    "material": "cotton",
+    "size": "L"
+  }},
+  "hard_constraints": {{
+    "price": {{"max": 500}}
+  }},
+  "soft_preferences": {{"brand": "Nike"}},
+  "sort_by": null
+}}
 
-Query: "add black pen"
-Response: {{"product": "pen", "max_price": null, "min_price": null, "min_rating": null, "max_rating": null, "sort_by": null, "color": "black"}}
+Query: "wireless gaming mouse from Logitech with high rating"
+Response: {{
+  "product": "mouse",
+  "attributes": {{
+    "connectivity": "wireless",
+    "type": "gaming"
+  }},
+  "hard_constraints": {{
+    "brand": "Logitech",
+    "rating": {{"min": 4.0}}
+  }},
+  "soft_preferences": {{}},
+  "sort_by": null
+}}
 
+Query: "electric kettle 1500W, ₹800-1500, rating 4+, preferably Philips or Prestige"
+Response: {{
+  "product": "electric kettle",
+  "attributes": {{
+    "power": "1500W"
+  }},
+  "hard_constraints": {{
+    "price": {{"min": 800, "max": 1500}},
+    "rating": {{"min": 4.0}}
+  }},
+  "soft_preferences": {{
+    "brands": ["Philips", "Prestige"]
+  }},
+  "sort_by": null
+}}
+
+Query: "pen with price less than 20 rs"
+Response: {{
+  "product": "pen",
+  "attributes": {{}},
+  "hard_constraints": {{
+    "price": {{"max": 20}}
+  }},
+  "soft_preferences": {{}},
+  "sort_by": null
+}}
+
+Query: "men's cotton t-shirt size M under ₹500 with at least 30% discount and rating above 4"
+Response: {{
+  "product": "cotton t-shirt",
+  "attributes": {{
+    "gender": "men",
+    "material": "cotton",
+    "size": "M"
+  }},
+  "hard_constraints": {{
+    "price": {{"max": 500}},
+    "discount": {{"min": 30}},
+    "rating": {{"min": 4.0}}
+  }},
+  "soft_preferences": {{}},
+  "sort_by": null
+}}
+
+=============================================================
 User query:
 {query}
 

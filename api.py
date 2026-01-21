@@ -47,10 +47,23 @@ async def add_to_cart(request:QueryRequest):
             else:
                 cart_data = res
             
+            # Serialize intent properly (handle nested dicts)
+            try:
+                intent_data = intent.model_dump() if hasattr(intent, 'model_dump') else intent.dict()
+            except Exception:
+                # Fallback: convert to dict manually
+                intent_data = {
+                    "product": intent.product,
+                    "attributes": intent.attributes,
+                    "hard_constraints": intent.hard_constraints,
+                    "soft_preferences": intent.soft_preferences,
+                    "sort_by": intent.sort_by
+                }
+            
             return {
-                "success":True,
-                "intent":intent.model_dump() if hasattr(intent, 'model_dump') else intent.dict() if hasattr(intent, 'dict') else intent,
-                "cart":cart_data
+                "success": True,
+                "intent": intent_data,
+                "cart": cart_data
             }
         return {
             "success":False,
